@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/votekin-core", "crates/votekin-plugin"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+authors = ["Jonny Bogarin"]
+repository = "https://github.com/johnnybogarin/votekin"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
