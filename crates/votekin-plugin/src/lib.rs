@@ -1,10 +1,11 @@
 mod config;
 mod legacy;
 mod listener;
+mod subscriptions;
 
 use listener::{Event, Listener};
 use pumpkin_plugin_api::{
-    Context, Plugin, PluginMetadata, permissions,
+    Context, Plugin, PluginMetadata, ipc, permissions,
     scheduler::{self, SchedulerExt},
 };
 use std::{
@@ -15,6 +16,7 @@ use std::{
 struct VoteKin {
     listener: Arc<Mutex<Option<Listener>>>,
     task: Mutex<Option<u32>>,
+    subscriptions: Arc<subscriptions::Subscriptions>,
 }
 
 impl Plugin for VoteKin {
@@ -22,6 +24,7 @@ impl Plugin for VoteKin {
         Self {
             listener: Arc::new(Mutex::new(None)),
             task: Mutex::new(None),
+            subscriptions: Arc::new(subscriptions::Subscriptions::default()),
         }
     }
 
@@ -55,6 +58,7 @@ impl Plugin for VoteKin {
             .lock()
             .map_err(|_| "VoteKin listener lock failed")? = Some(listener);
         let shared = Arc::clone(&self.listener);
+        let subscriptions = Arc::clone(&self.subscriptions);
         let task = context.schedule_repeating_task(1, 1, move |_| {
             let events = {
                 let Ok(mut state) = shared.try_lock() else {
@@ -64,9 +68,20 @@ impl Plugin for VoteKin {
             };
             for event in events {
                 match event {
-                    Event::Accepted(vote) => tracing::info!(
-                        service = ?vote.service(), username = ?vote.username(), protocol = ?vote.source_protocol(), "Vote received"
-                    ),
+                    Event::Accepted(vote) => {
+                        tracing::info!(service = ?vote.service(), username = ?vote.username(), protocol = ?vote.source_protocol(), "Vote received");
+                        match subscriptions.publish(&vote, |recipient, message| {
+                            match ipc::send_ipc_message(recipient, message) {
+                                Ok(Ok(_)) => Ok(()),
+                                _ => Err(()),
+                            }
+                        }) {
+                            Ok(failed) => for consumer in failed {
+                                tracing::warn!(consumer = ?consumer, "Vote delivery failed: consumer unavailable or returned an error");
+                            },
+                            Err(error) => tracing::warn!(%error, "Vote delivery failed"),
+                        }
+                    }
                     Event::Failure { reason, suppressed } => tracing::warn!(
                         %reason, suppressed, "VoteKin connection rejected or failed"
                     ),
@@ -81,8 +96,14 @@ impl Plugin for VoteKin {
                 "Legacy v1 enabled: votes are not authenticated; public key is in plugins/data/votekin/public.key"
             );
         }
-        tracing::info!("Votes are logged; reward delivery is not implemented");
+        tracing::info!("Votes are forwarded to subscribed plugins; VoteKin does not issue rewards");
         Ok(())
+    }
+
+    fn handle_ipc_message(&self, sender: String, message: Vec<u8>) -> Result<Vec<u8>, String> {
+        let response = self.subscriptions.handle(&sender, &message)?;
+        tracing::debug!(consumer = ?sender, "VoteKin subscription request handled");
+        Ok(response)
     }
 
     fn on_unload(&self, _context: Context) -> Result<(), String> {
@@ -98,6 +119,7 @@ impl Plugin for VoteKin {
             .lock()
             .map_err(|_| "VoteKin listener lock failed")?
             .take();
+        self.subscriptions.clear()?;
         tracing::info!("VoteKin listener stopped");
         tracing::info!("VoteKin unloaded");
         Ok(())
