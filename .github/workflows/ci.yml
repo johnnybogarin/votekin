@@ -18,6 +18,6 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy -p votekin-core --all-targets -- -D warnings
-      - run: cargo test -p votekin-core -p votekin-plugin
-      - run: cargo clippy -p votekin-plugin --target wasm32-wasip2 -- -D warnings
+      - run: cargo test -p votekin-core -p votekin
+      - run: cargo clippy -p votekin --target wasm32-wasip2 -- -D warnings
       - run: cargo build-plugin

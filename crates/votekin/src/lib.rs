@@ -1,3 +1,8 @@
+#![expect(
+    non_snake_case,
+    reason = "The library name sets the VoteKin.wasm filename."
+)]
+
 mod config;
 mod legacy;
 mod listener;

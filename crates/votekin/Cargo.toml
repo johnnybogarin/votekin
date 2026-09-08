@@ -1,5 +1,5 @@
 [package]
-name = "votekin-plugin"
+name = "votekin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [lib]
-name = "votekin"
+name = "VoteKin"
 crate-type = ["cdylib"]
 
 [dependencies]

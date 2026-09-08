@@ -9,11 +9,11 @@ rustup target add wasm32-wasip2
 cargo build-plugin
 ```
 
-Output: `target/wasm32-wasip2/release/votekin.wasm`
+Output: `target/wasm32-wasip2/release/VoteKin.wasm`
 
 ## Installation
 
-Stop Pumpkin, copy `votekin.wasm` into `plugins/`, restart, and approve the requested permissions (`network.tcp.bind` to listen for votes; `fs.read.data`/`fs.write.data` for its config folder).
+Stop Pumpkin, copy `VoteKin.wasm` into `plugins/`, restart, and approve the requested permissions (`network.tcp.bind` to listen for votes; `fs.read.data`/`fs.write.data` for its config folder).
 
 On first load, VoteKin creates `plugins/data/votekin/config.json`:
 
@@ -108,9 +108,9 @@ after VoteKin reloads; restarting Pumpkin together is the simplest approach.
 
 ```sh
 cargo fmt --all --check
-cargo test -p votekin-core -p votekin-plugin
-cargo clippy -p votekin-core -p votekin-plugin --all-targets -- -D warnings
-cargo clippy -p votekin-plugin --target wasm32-wasip2 -- -D warnings
+cargo test -p votekin-core -p votekin
+cargo clippy -p votekin-core -p votekin --all-targets -- -D warnings
+cargo clippy -p votekin --target wasm32-wasip2 -- -D warnings
 ```
 
 ## License
