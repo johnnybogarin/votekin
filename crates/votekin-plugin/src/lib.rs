@@ -1,10 +1,27 @@
-use pumpkin_plugin_api::{Context, Plugin, PluginMetadata};
+mod config;
+mod listener;
 
-struct VoteKin;
+use listener::{Event, Listener};
+use pumpkin_plugin_api::{
+    Context, Plugin, PluginMetadata, permissions,
+    scheduler::{self, SchedulerExt},
+};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+struct VoteKin {
+    listener: Arc<Mutex<Option<Listener>>>,
+    task: Mutex<Option<u32>>,
+}
 
 impl Plugin for VoteKin {
     fn new() -> Self {
-        Self
+        Self {
+            listener: Arc::new(Mutex::new(None)),
+            task: Mutex::new(None),
+        }
     }
 
     fn metadata(&self) -> PluginMetadata {
@@ -14,17 +31,62 @@ impl Plugin for VoteKin {
             authors: vec!["Jonny Bogarin".into()],
             description: "Vote listener for Pumpkin servers".into(),
             dependencies: vec![],
-            permissions: vec![],
+            permissions: vec![
+                permissions::NETWORK_TCP_BIND.into(),
+                permissions::FS_READ_DATA.into(),
+                permissions::FS_WRITE_DATA.into(),
+            ],
         }
     }
 
-    fn on_load(&self, _context: Context) -> Result<(), String> {
+    fn on_load(&self, context: Context) -> Result<(), String> {
+        let config = config::Config::load(Path::new(&context.get_data_folder()))?;
+        let address = config.address();
+        let listener = Listener::bind(config)?;
+        *self
+            .listener
+            .lock()
+            .map_err(|_| "VoteKin listener lock failed")? = Some(listener);
+        let shared = Arc::clone(&self.listener);
+        let task = context.schedule_repeating_task(1, 1, move |_| {
+            let events = {
+                let Ok(mut state) = shared.try_lock() else {
+                    return;
+                };
+                state.as_mut().map(Listener::poll).unwrap_or_default()
+            };
+            for event in events {
+                match event {
+                    Event::Accepted(vote) => tracing::info!(
+                        service = ?vote.service(), username = ?vote.username(), "Vote received"
+                    ),
+                    Event::Failure { reason, suppressed } => tracing::warn!(
+                        %reason, suppressed, "VoteKin connection rejected or failed"
+                    ),
+                }
+            }
+        });
+        *self.task.lock().map_err(|_| "VoteKin task lock failed")? = Some(task);
         tracing::info!("VoteKin {} loaded", env!("CARGO_PKG_VERSION"));
-        tracing::info!("Vote reception is not implemented yet");
+        tracing::info!(%address, "VoteKin listening (NuVotifier v2)");
+        tracing::info!("Votes are authenticated and logged; reward delivery is not implemented");
         Ok(())
     }
 
     fn on_unload(&self, _context: Context) -> Result<(), String> {
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| "VoteKin task lock failed")?
+            .take();
+        if let Some(task) = task {
+            scheduler::cancel_task(task);
+        }
+        self.listener
+            .lock()
+            .map_err(|_| "VoteKin listener lock failed")?
+            .take();
+        tracing::info!("VoteKin listener stopped");
         tracing::info!("VoteKin unloaded");
         Ok(())
     }

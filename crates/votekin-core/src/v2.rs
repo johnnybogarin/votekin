@@ -1,6 +1,5 @@
 use std::{
     fmt,
-    net::IpAddr,
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -12,6 +11,7 @@ use sha2::Sha256;
 use crate::{SourceProtocol, ValidationError, Vote};
 
 pub const MAX_MESSAGE_BYTES: usize = 8192;
+const MAX_ADDRESS_BYTES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -39,7 +39,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidSignature => "invalid vote signature",
             Self::InvalidChallenge => "vote challenge does not match",
             Self::EmptyToken => "vote authentication token is empty",
-            Self::InvalidAddress => "invalid vote address",
+            Self::InvalidAddress => "vote address exceeds 256 bytes or contains control characters",
             Self::InvalidTimestamp => "vote timestamp is out of range",
             Self::InvalidVote(error) => return error.fmt(f),
         };
@@ -110,10 +110,10 @@ pub fn decode(frame: &[u8], token: &str, expected_challenge: &str) -> Result<Vot
     if payload.challenge != expected_challenge {
         return Err(DecodeError::InvalidChallenge);
     }
-    payload
-        .address
-        .parse::<IpAddr>()
-        .map_err(|_| DecodeError::InvalidAddress)?;
+    // NuVotifier treats this as text. We do not use it for identity or networking.
+    if payload.address.len() > MAX_ADDRESS_BYTES || payload.address.chars().any(char::is_control) {
+        return Err(DecodeError::InvalidAddress);
+    }
     let offset = Duration::from_millis(payload.timestamp.unsigned_abs());
     let voted_at = if payload.timestamp < 0 {
         UNIX_EPOCH.checked_sub(offset)
@@ -268,9 +268,44 @@ mod tests {
     }
 
     #[test]
+    fn accepts_address_text_but_keeps_field_limits() {
+        let mut payload: serde_json::Value = serde_json::from_str(PAYLOAD).unwrap();
+        for address in [
+            "",
+            "unknown",
+            "test-vote",
+            "127.0.0.1",
+            "::1",
+            &"x".repeat(MAX_ADDRESS_BYTES),
+        ] {
+            payload["address"] = json!(address);
+            let packet = signed(&payload.to_string());
+            assert!(decode(&packet, "test-token", "test-challenge").is_ok());
+            assert_eq!(
+                decode(&packet, "wrong-token", "test-challenge"),
+                Err(DecodeError::InvalidSignature)
+            );
+        }
+        for address in [
+            "address\nforged log",
+            "address\0",
+            &"x".repeat(MAX_ADDRESS_BYTES + 1),
+        ] {
+            payload["address"] = json!(address);
+            assert_eq!(
+                decode(
+                    &signed(&payload.to_string()),
+                    "test-token",
+                    "test-challenge"
+                ),
+                Err(DecodeError::InvalidAddress)
+            );
+        }
+    }
+
+    #[test]
     fn validates_authenticated_fields() {
         for (from, to, error) in [
-            ("127.0.0.1", "invalid-address", DecodeError::InvalidAddress),
             (
                 "Alex",
                 "",
