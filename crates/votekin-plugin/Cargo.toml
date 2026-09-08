@@ -11,6 +11,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+tracing = "0.1"
 pumpkin-plugin-api = { version = "0.1.0", git = "https://github.com/Pumpkin-MC/Pumpkin", package = "pumpkin-plugin-api" }
 votekin-core = { path = "../votekin-core" }
 
