@@ -1,4 +1,5 @@
 mod config;
+mod legacy;
 mod listener;
 
 use listener::{Event, Listener};
@@ -42,7 +43,13 @@ impl Plugin for VoteKin {
     fn on_load(&self, context: Context) -> Result<(), String> {
         let config = config::Config::load(Path::new(&context.get_data_folder()))?;
         let address = config.address();
-        let listener = Listener::bind(config)?;
+        let enable_v1 = config.enable_v1;
+        let legacy = if enable_v1 {
+            Some(legacy::Legacy::load(Path::new(&context.get_data_folder()))?)
+        } else {
+            None
+        };
+        let listener = Listener::bind(config, legacy)?;
         *self
             .listener
             .lock()
@@ -58,7 +65,7 @@ impl Plugin for VoteKin {
             for event in events {
                 match event {
                     Event::Accepted(vote) => tracing::info!(
-                        service = ?vote.service(), username = ?vote.username(), "Vote received"
+                        service = ?vote.service(), username = ?vote.username(), protocol = ?vote.source_protocol(), "Vote received"
                     ),
                     Event::Failure { reason, suppressed } => tracing::warn!(
                         %reason, suppressed, "VoteKin connection rejected or failed"
@@ -68,8 +75,13 @@ impl Plugin for VoteKin {
         });
         *self.task.lock().map_err(|_| "VoteKin task lock failed")? = Some(task);
         tracing::info!("VoteKin {} loaded", env!("CARGO_PKG_VERSION"));
-        tracing::info!(%address, "VoteKin listening (NuVotifier v2)");
-        tracing::info!("Votes are authenticated and logged; reward delivery is not implemented");
+        tracing::info!(%address, enable_v1, "VoteKin listening (NuVotifier v2)");
+        if enable_v1 {
+            tracing::warn!(
+                "Legacy v1 enabled: votes are not authenticated; public key is in plugins/data/votekin/public.key"
+            );
+        }
+        tracing::info!("Votes are logged; reward delivery is not implemented");
         Ok(())
     }
 

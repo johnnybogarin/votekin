@@ -4,7 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use votekin_core::{Vote, v2};
+use crate::legacy::Legacy;
+use votekin_core::{Vote, v1, v2};
 
 use crate::config::{Config, random_secret};
 
@@ -21,12 +22,13 @@ pub struct Listener {
     socket: TcpListener,
     connections: Vec<Connection<TcpStream>>,
     token: String,
+    legacy: Option<Legacy>,
     next_failure_log: Instant,
     suppressed: usize,
 }
 
 impl Listener {
-    pub fn bind(config: Config) -> Result<Self, String> {
+    pub fn bind(config: Config, legacy: Option<Legacy>) -> Result<Self, String> {
         let socket = TcpListener::bind(config.address())
             .map_err(|error| format!("Cannot bind VoteKin to {}: {error}", config.address()))?;
         socket
@@ -36,6 +38,7 @@ impl Listener {
             socket,
             connections: Vec::new(),
             token: config.token,
+            legacy,
             next_failure_log: Instant::now(),
             suppressed: 0,
         })
@@ -69,8 +72,14 @@ impl Listener {
                 }
             }
         }
+        let mut legacy_budget = 1;
         for index in 0..self.connections.len() {
-            match self.connections[index].poll(&self.token, now) {
+            match self.connections[index].poll(
+                &self.token,
+                now,
+                self.legacy.as_mut(),
+                &mut legacy_budget,
+            ) {
                 Outcome::Accepted(vote) => events.push(Event::Accepted(vote)),
                 Outcome::Rejected(reason) => self.failure(reason, now, &mut events),
                 Outcome::Pending => {}
@@ -116,6 +125,7 @@ struct Connection<S> {
     stage: Stage,
     input: Vec<u8>,
     expected: usize,
+    legacy_frame: bool,
     output: Vec<u8>,
     written: usize,
 }
@@ -130,12 +140,19 @@ impl<S: Read + Write> Connection<S> {
             stage: Stage::Greeting,
             input: Vec::with_capacity(4),
             expected: 4,
+            legacy_frame: false,
             output,
             written: 0,
         }
     }
 
-    fn poll(&mut self, token: &str, now: Instant) -> Outcome {
+    fn poll(
+        &mut self,
+        token: &str,
+        now: Instant,
+        legacy: Option<&mut Legacy>,
+        legacy_budget: &mut usize,
+    ) -> Outcome {
         if self.stage == Stage::Closed {
             return Outcome::Pending;
         }
@@ -167,12 +184,37 @@ impl<S: Read + Write> Connection<S> {
                 Stage::Reading => {
                     if self.input.len() == self.expected {
                         if self.expected == 4 {
-                            match v2::frame_length(&self.input) {
-                                Ok(length) => self.expected = length,
-                                Err(error) => return self.reject(error),
+                            if self.input[..2] == [0x73, 0x3a] {
+                                match v2::frame_length(&self.input) {
+                                    Ok(length) => self.expected = length,
+                                    Err(error) => return self.reject(error),
+                                }
+                            } else if legacy.is_some() {
+                                self.expected = v1::PACKET_BYTES;
+                                self.legacy_frame = true;
+                            } else {
+                                return self
+                                    .close("Legacy Votifier v1 is disabled or invalid protocol");
                             }
                         }
                         if self.input.len() == self.expected {
+                            if self.legacy_frame {
+                                if *legacy_budget == 0 {
+                                    return Outcome::Pending;
+                                }
+                                *legacy_budget -= 1;
+                                self.stage = Stage::Closed;
+                                let Some(legacy) = legacy else {
+                                    return Outcome::Rejected(
+                                        "Legacy Votifier v1 is disabled".into(),
+                                    );
+                                };
+                                // Limit costly private-key operations to one per server tick.
+                                return match v1::decode(&self.input, &legacy.key, &mut legacy.rng) {
+                                    Ok(vote) => Outcome::Accepted(vote),
+                                    Err(_) => Outcome::Rejected("Invalid legacy vote".into()),
+                                };
+                            }
                             return match v2::decode(&self.input, token, &self.challenge) {
                                 Ok(vote) => {
                                     self.reply(b"{\"status\":\"ok\"}\n".to_vec());
@@ -284,7 +326,7 @@ mod tests {
         let mut connection = Connection::new(socket, "test-challenge".into(), now);
         let mut accepted = 0;
         for _ in 0..1000 {
-            match connection.poll("test-token", now) {
+            match connection.poll("test-token", now, None, &mut 1) {
                 Outcome::Accepted(vote) => {
                     assert_eq!(vote.username(), "Alex");
                     accepted += 1;
@@ -322,7 +364,7 @@ mod tests {
             );
             let mut rejected = 0;
             for _ in 0..1000 {
-                match connection.poll(token, now) {
+                match connection.poll(token, now, None, &mut 1) {
                     Outcome::Accepted(_) => panic!("invalid vote accepted"),
                     Outcome::Rejected(_) => rejected += 1,
                     Outcome::Pending => {}
@@ -342,17 +384,99 @@ mod tests {
     }
 
     #[test]
+    fn legacy_keys_persist_and_listener_handles_both_protocols() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use rsa::{Pkcs1v15Encrypt, RsaPublicKey, pkcs8::DecodePublicKey};
+        let folder = std::env::temp_dir().join(format!("votekin-v1-{}", random_secret().unwrap()));
+        std::fs::create_dir(&folder).unwrap();
+        let mut legacy = Legacy::load(&folder).unwrap();
+        let saved = std::fs::read(folder.join("private.pem")).unwrap();
+        let restored = Legacy::load(&folder).unwrap();
+        assert_eq!(legacy.key, restored.key);
+        assert_eq!(std::fs::read(folder.join("private.pem")).unwrap(), saved);
+        let public = STANDARD
+            .decode(std::fs::read(folder.join("public.key")).unwrap())
+            .unwrap();
+        let public = RsaPublicKey::from_public_key_der(&public).unwrap();
+        assert_eq!(public, RsaPublicKey::from(&legacy.key));
+        let encrypted = public
+            .encrypt(
+                &mut legacy.rng,
+                Pkcs1v15Encrypt,
+                b"VOTE\nList\nAlex\nunknown\n123456\n",
+            )
+            .unwrap();
+        assert_eq!(encrypted.len(), v1::PACKET_BYTES);
+        let now = Instant::now();
+        for (input, enabled, expected_protocol) in [
+            (
+                encrypted.clone(),
+                true,
+                Some(votekin_core::SourceProtocol::VotifierV1),
+            ),
+            (
+                packet(),
+                true,
+                Some(votekin_core::SourceProtocol::NuVotifierV2),
+            ),
+            (encrypted, false, None),
+            (vec![0; 256], true, None),
+        ] {
+            let mut connection = Connection::new(
+                Socket {
+                    input: input.into(),
+                    ..Socket::default()
+                },
+                "test-challenge".into(),
+                now,
+            );
+            let mut accepted = None;
+            let mut rejected = 0;
+            for _ in 0..1000 {
+                let key = if enabled { Some(&mut legacy) } else { None };
+                match connection.poll("test-token", now, key, &mut 1) {
+                    Outcome::Accepted(vote) => {
+                        assert!(accepted.is_none());
+                        accepted = Some(vote.source_protocol());
+                    }
+                    Outcome::Rejected(_) => rejected += 1,
+                    Outcome::Pending => {}
+                }
+                if connection.stage == Stage::Closed {
+                    break;
+                }
+            }
+            assert!(connection.stage == Stage::Closed);
+            assert_eq!(accepted, expected_protocol);
+            assert_eq!(rejected, usize::from(expected_protocol.is_none()));
+            if expected_protocol != Some(votekin_core::SourceProtocol::NuVotifierV2) {
+                assert_eq!(connection.stream.output, b"VOTIFIER 2 test-challenge\n");
+            }
+        }
+        std::fs::write(folder.join("private.pem"), b"broken").unwrap();
+        assert!(Legacy::load(&folder).is_err());
+        assert_eq!(
+            std::fs::read(folder.join("private.pem")).unwrap(),
+            b"broken"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn deadline_closes_idle_connection() {
         let now = Instant::now();
         let mut connection = Connection::new(Socket::default(), "challenge".into(), now);
-        assert!(matches!(connection.poll("token", now), Outcome::Pending));
         assert!(matches!(
-            connection.poll("token", now + CONNECTION_TIMEOUT),
+            connection.poll("token", now, None, &mut 1),
+            Outcome::Pending
+        ));
+        assert!(matches!(
+            connection.poll("token", now + CONNECTION_TIMEOUT, None, &mut 1),
             Outcome::Rejected(_)
         ));
         assert!(connection.stage == Stage::Closed);
         assert!(matches!(
-            connection.poll("token", now + CONNECTION_TIMEOUT),
+            connection.poll("token", now + CONNECTION_TIMEOUT, None, &mut 1),
             Outcome::Pending
         ));
     }

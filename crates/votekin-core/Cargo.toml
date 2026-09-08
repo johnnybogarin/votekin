@@ -8,6 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+rsa = { version = "0.9.10", default-features = false, features = ["pem", "u64_digit"] }
 base64 = "0.22"
 hmac = "0.12"
 serde = { version = "1", features = ["derive"] }

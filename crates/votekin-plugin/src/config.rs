@@ -13,6 +13,8 @@ pub struct Config {
     pub bind_address: IpAddr,
     pub port: u16,
     pub token: String,
+    #[serde(default)]
+    pub enable_v1: bool,
 }
 
 impl Config {
@@ -33,6 +35,7 @@ impl Config {
                         bind_address: IpAddr::from([0, 0, 0, 0]),
                         port: 8192,
                         token: random_secret()?,
+                        enable_v1: false,
                     };
                     let data = serde_json::to_vec_pretty(&config)
                         .map_err(|_| "Cannot encode VoteKin configuration")?;
@@ -63,8 +66,9 @@ impl Config {
     }
 
     fn parse(data: &[u8]) -> Result<Self, String> {
-        let config: Self = serde_json::from_slice(data)
-            .map_err(|_| "Invalid VoteKin config.json: check bind_address, port, and token")?;
+        let config: Self = serde_json::from_slice(data).map_err(
+            |_| "Invalid VoteKin config.json: check bind_address, port, token, and enable_v1",
+        )?;
         if config.port == 0 {
             return Err("VoteKin port must be between 1 and 65535".into());
         }
@@ -102,6 +106,12 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("votekin-{}", random_secret().unwrap()));
         let first = Config::load(&folder).unwrap();
         assert_eq!(first.token.len(), 64);
+        assert!(!first.enable_v1);
+        assert!(
+            !Config::parse(br#"{"bind_address":"0.0.0.0","port":8192,"token":"secret"}"#)
+                .unwrap()
+                .enable_v1
+        );
         assert_eq!(Config::load(&folder).unwrap().token, first.token);
         fs::write(folder.join("config.json"), b"{broken secret").unwrap();
         assert!(Config::load(&folder).is_err());
