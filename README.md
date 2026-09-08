@@ -1,6 +1,6 @@
 # VoteKin
 
-VoteKin is a WebAssembly vote listener for [Pumpkin](https://pumpkinmc.org/). It receives NuVotifier v2 votes, verifies signatures and challenges, and logs the service and player name. Optional legacy Votifier v1 votes are decrypted and logged without sender authentication. Received votes are forwarded live to subscribed Pumpkin plugins. VoteKin does not store votes or issue rewards.
+VoteKin is a WebAssembly vote listener for [Pumpkin](https://pumpkinmc.org/). It can receive NuVotifier v2 votes or optional (config enabled) legacy Votifier v1 votes. Received votes are forwarded live to subscribed Pumpkin plugins. VoteKin does not store votes or issue rewards.
 
 ## Building
 
@@ -13,7 +13,7 @@ Output: `target/wasm32-wasip2/release/VoteKin.wasm`
 
 ## Installation
 
-Stop Pumpkin, copy `VoteKin.wasm` into `plugins/`, restart, and approve the requested permissions (`network.tcp.bind` to listen for votes; `fs.read.data`/`fs.write.data` for its config folder).
+Stop Pumpkin, copy `VoteKin.wasm` into `plugins/`, restart. Approve the requested permissions (`network.tcp.bind` to listen for votes; `fs.read.data`/`fs.write.data` for its config folder).
 
 On first load, VoteKin creates `plugins/data/votekin/config.json`:
 
@@ -26,7 +26,7 @@ On first load, VoteKin creates `plugins/data/votekin/config.json`:
 }
 ```
 
-- A secure token is auto-generated at first load as the `token` value, which persists across restarts; it's never printed to console. Keep the file/token private.
+- A secure token is auto-generated at first load as the `token` value. This is persisted. Keep the token private.
 - `0.0.0.0` binds all IPv4 interfaces; use `127.0.0.1` for local-only. Must be a valid IPv4/IPv6 address.
 - Invalid config blocks loading (and won't be overwritten) — restart Pumpkin after edits.
 
@@ -34,17 +34,17 @@ On first load, VoteKin creates `plugins/data/votekin/config.json`:
 
 **Limits:** One vote per connection, up to 32 concurrent connections, a five-second deadline per exchange, and an 8 KiB maximum JSON message size.
 
-## Legacy Votifier v1
+## Legacy Votifier v1 (Not really recommended)
 
-Votekin also supports older RSA public key voting. The enable this, set `"enable_v1": true`
+Votekin supports older RSA public key voting. The enable this, set `"enable_v1": true`
 in `plugins/data/votekin/config.json` and restart Pumpkin. Existing configurations
 without this field keep v1 disabled. NuVotifier v2 remains available on the same port.
 
 Once set to true and after start up, copy the entire
 contents of `plugins/data/votekin/public.key` into the server list's public-key
-field.Keep`private.pem` private.
+field. Keep`private.pem` private.
 
-V1 has no token authentication or challenge-based replay protection: anyone
+NOTE: V1 has no token authentication or challenge-based replay protection: anyone
 with the public key can submit a vote. Ideally, use v2 if available. The RSA library
 also has a known [timing-attack advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071.html);
 blinded decryption is used, but does not remove that documented limitation.
@@ -55,23 +55,18 @@ records local receipt time without interpreting the supplied timestamp (duno if 
 
 ## Plugin integration (IPC v1)
 
-Consumers (plugins that offer vote rewards for example) should declare `votekin` as a Pumpkin plugin dependency so it loads
-first. Send UTF-8 JSON bytes to plugin `votekin` with Pumpkin's
-`ipc::send_ipc_message` during consumer load:
+Declare `votekin` as a plugin dependency. Send JSON bytes via
+`ipc::send_ipc_message` to `votekin` on load/unload:
 
 ```json
 {"type":"votekin:subscribe/v1"}
+{"type":"votekin:unsubscribe/v1"}
 ```
 
-VoteKin registers the sender identity supplied by Pumpkin. There is no recipient
-field. To unsubscribe, send `{"type":"votekin:unsubscribe/v1"}` during consumer
-unload. Both requests are idempotent and return `{"status":"ok"}` as JSON bytes.
-Malformed or unsupported requests return an IPC error. Requests are limited to
-256 bytes. Check both result layers: `Ok(Ok(response))` means VoteKin returned a
-response; `Ok(Err(reason))` is a handler error and `Err(())` is a host delivery failure.
+Subscriptions use Pumpkin's sender identity. Both requests are idempotent,
+limited to 256 bytes, and return `{"status":"ok"}` or an IPC error.
 
-Consumers implement Pumpkin's `handle_ipc_message` callback. Check that the
-host-supplied sender is `votekin`, then read messages with this shape:
+Handle votes in `handle_ipc_message`, verifying the sender is `votekin`:
 
 ```json
 {
@@ -84,25 +79,15 @@ host-supplied sender is `votekin`, then read messages with this shape:
 }
 ```
 
-- `source_protocol` is `nuvotifier_v2` or `votifier_v1`. An accepted v1 vote is
-  decrypted and validated, but its sender is not authenticated.
-- Timestamps are signed integer Unix milliseconds. `voted_at` is the sender's
-  claimed time, or `null` for v1. `received_at` is recorded locally by VoteKin.
-- No token, address, private key, or raw packet is included.
-- Return `Ok(Vec::new())` after handling a vote. VoteKin ignores successful
-  response bytes. Return `Err(...)` to report a delivery failure.
+`source_protocol` is `nuvotifier_v2` or `votifier_v1`; v1 does not authenticate
+senders. Timestamps are signed Unix milliseconds: `voted_at` is sender-provided
+(`null` for v1), and `received_at` is local. Return `Ok(Vec::new())` on success
+or `Err(...)` on failure.
 
-Delivery is synchronous and uses a snapshot of subscribers for each vote.
-Subscription changes made during a callback affect subsequent votes. Keep
-callbacks short; slow consumers delay processing. A returned error or unavailable
-consumer is logged and does not stop attempts to the remaining subscribers.
-Failed subscriptions remain registered until explicitly removed or VoteKin unloads.
-
-There is no vote storage, retry, replay, or reward-delivery guarantee. Votes sent
-with no subscribers are only logged; missed votes cannot be recovered. A v2
-success response confirms vote validation, not consumer processing or rewards.
-Subscriptions are cleared when VoteKin unloads. Consumers must subscribe again
-after VoteKin reloads; restarting Pumpkin together is the simplest approach.
+Delivery is synchronous and live only, with no storage or retries. Consumer
+errors are logged without stopping other deliveries or removing subscriptions.
+Subscription changes affect subsequent votes; resubscribe after VoteKin reloads.
+A v2 acknowledgement confirms validation, not reward delivery.
 
 ## Development checks
 
@@ -115,7 +100,7 @@ cargo clippy -p votekin --target wasm32-wasip2 -- -D warnings
 
 ## Examples
 
-This plugin is currently being used by Planetmine, where they have voting enabled at https://www.minecraftindex.com/server/kiQO38CzqJj4jM-KD9Xg1
+This plugin is currently being used by Planetmine, where they have voting enabled at [MinecraftIndex](https://www.minecraftindex.com/server/kiQO38CzqJj4jM-KD9Xg1). 
 
 
 ## License
