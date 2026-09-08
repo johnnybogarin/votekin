@@ -113,6 +113,11 @@ cargo clippy -p votekin-core -p votekin --all-targets -- -D warnings
 cargo clippy -p votekin --target wasm32-wasip2 -- -D warnings
 ```
 
+## Examples
+
+This plugin is currently being used by Planetmine, where they have voting enabled at https://www.minecraftindex.com/server/kiQO38CzqJj4jM-KD9Xg1
+
+
 ## License
 
 MIT
