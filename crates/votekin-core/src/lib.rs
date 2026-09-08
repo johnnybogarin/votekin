@@ -1,5 +1,7 @@
 //! Protocol and vote handling for VoteKin.
 
+pub mod v2;
+
 use std::{fmt, time::SystemTime};
 
 pub const MAX_SERVICE_NAME_BYTES: usize = 128;
