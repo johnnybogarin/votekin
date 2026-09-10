@@ -20,7 +20,7 @@ pub struct Config {
 impl Config {
     pub fn load(folder: &Path) -> Result<Self, String> {
         fs::create_dir_all(folder).map_err(|_| "Cannot create VoteKin data directory")?;
-        let path = folder.join("config.json");
+        let path = folder.join("config.yaml");
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -37,9 +37,9 @@ impl Config {
                         token: random_secret()?,
                         enable_v1: false,
                     };
-                    let data = serde_json::to_vec_pretty(&config)
+                    let data = serde_yaml_ng::to_string(&config)
                         .map_err(|_| "Cannot encode VoteKin configuration")?;
-                    file.write_all(&data)
+                    file.write_all(data.as_bytes())
                         .map_err(|_| "Cannot write VoteKin configuration")?;
                     file.sync_all()
                         .map_err(|_| "Cannot save VoteKin configuration")?;
@@ -55,19 +55,19 @@ impl Config {
                 let mut data = Vec::new();
                 File::open(&path)
                     .and_then(|file| file.take(16385).read_to_end(&mut data))
-                    .map_err(|_| "Cannot read VoteKin config.json")?;
+                    .map_err(|_| "Cannot read VoteKin config.yaml")?;
                 if data.len() > 16384 {
-                    return Err("VoteKin config.json exceeds 16 KiB".into());
+                    return Err("VoteKin config.yaml exceeds 16 KiB".into());
                 }
                 Self::parse(&data)
             }
-            Err(_) => Err("Cannot create VoteKin config.json".into()),
+            Err(_) => Err("Cannot create VoteKin config.yaml".into()),
         }
     }
 
     fn parse(data: &[u8]) -> Result<Self, String> {
-        let config: Self = serde_json::from_slice(data).map_err(
-            |_| "Invalid VoteKin config.json: check bind_address, port, token, and enable_v1",
+        let config: Self = serde_yaml_ng::from_slice(data).map_err(
+            |_| "Invalid VoteKin config.yaml: check bind_address, port, token, and enable_v1",
         )?;
         if config.port == 0 {
             return Err("VoteKin port must be between 1 and 65535".into());
@@ -108,16 +108,16 @@ mod tests {
         assert_eq!(first.token.len(), 64);
         assert!(!first.enable_v1);
         assert!(
-            !Config::parse(br#"{"bind_address":"0.0.0.0","port":8192,"token":"secret"}"#)
+            !Config::parse(b"bind_address: 0.0.0.0\nport: 8192\ntoken: secret\n")
                 .unwrap()
                 .enable_v1
         );
         assert_eq!(Config::load(&folder).unwrap().token, first.token);
-        fs::write(folder.join("config.json"), b"{broken secret").unwrap();
+        fs::write(folder.join("config.yaml"), b"token: [broken secret").unwrap();
         assert!(Config::load(&folder).is_err());
         assert_eq!(
-            fs::read(folder.join("config.json")).unwrap(),
-            b"{broken secret"
+            fs::read(folder.join("config.yaml")).unwrap(),
+            b"token: [broken secret"
         );
         fs::remove_dir_all(folder).unwrap();
     }
@@ -125,10 +125,10 @@ mod tests {
     #[test]
     fn validates_config_without_echoing_secrets() {
         for data in [
-            r#"{"bind_address":"0.0.0.0","port":0,"token":"secret"}"#,
-            r#"{"bind_address":"invalid","port":8192,"token":"secret"}"#,
-            r#"{"bind_address":"0.0.0.0","port":8192,"token":" "}"#,
-            r#"{"bind_address":"0.0.0.0","port":8192,"token":"secret","typo":true}"#,
+            "bind_address: 0.0.0.0\nport: 0\ntoken: secret\n",
+            "bind_address: invalid\nport: 8192\ntoken: secret\n",
+            "bind_address: 0.0.0.0\nport: 8192\ntoken: ' '\n",
+            "bind_address: 0.0.0.0\nport: 8192\ntoken: secret\ntypo: true\n",
         ] {
             let error = Config::parse(data.as_bytes()).err().unwrap();
             assert!(!error.contains("secret"));

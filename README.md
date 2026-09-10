@@ -1,6 +1,6 @@
 # VoteKin
 
-VoteKin is a WebAssembly vote listener for [Pumpkin](https://pumpkinmc.org/). It can receive NuVotifier v2 votes or optional (config enabled) legacy Votifier v1 votes. Received votes are forwarded live to subscribed Pumpkin plugins. VoteKin does not store votes or issue rewards.
+VoteKin is a vote listener for [Pumpkin](https://pumpkinmc.org/). It can receive NuVotifier v2 votes or optional (config enabled) legacy Votifier v1 votes. Received votes are forwarded live to subscribed Pumpkin plugins. VoteKin does not store votes or issue rewards.
 
 ## Building
 
@@ -15,15 +15,13 @@ Output: `target/wasm32-wasip2/release/VoteKin.wasm`
 
 Stop Pumpkin, copy `VoteKin.wasm` into `plugins/`, restart. Approve the requested permissions (`network.tcp.bind` to listen for votes; `fs.read.data`/`fs.write.data` for its config folder).
 
-On first load, VoteKin creates `plugins/data/votekin/config.json`:
+On first load, VoteKin creates `plugins/data/votekin/config.yaml`:
 
-```json
-{
-  "bind_address": "0.0.0.0",
-  "port": 8192,
-  "token": "YOUR_GENERATED_TOKEN",
-  "enable_v1": false
-}
+```yaml
+bind_address: "0.0.0.0"
+port: 8192
+token: "YOUR_GENERATED_TOKEN"
+enable_v1: false
 ```
 
 - A secure token is auto-generated at first load as the `token` value. This is persisted. Keep the token private.
@@ -36,8 +34,8 @@ On first load, VoteKin creates `plugins/data/votekin/config.json`:
 
 ## Legacy Votifier v1 (Not really recommended)
 
-Votekin supports older RSA public key voting. The enable this, set `"enable_v1": true`
-in `plugins/data/votekin/config.json` and restart Pumpkin. Existing configurations
+Votekin supports older RSA public key voting. To enable this, set `enable_v1: true`
+in `plugins/data/votekin/config.yaml` and restart Pumpkin. Existing configurations
 without this field keep v1 disabled. NuVotifier v2 remains available on the same port.
 
 Once set to true and after start up, copy the entire
